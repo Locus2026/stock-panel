@@ -120,6 +120,9 @@ def test_index_live_write_without_monitor_rules(monkeypatch) -> None:
     qs._app_state = SimpleNamespace(monitor_engine=_Engine())
     flush_calls: list[tuple[str, bool, list[str]]] = []
     monkeypatch.setattr(qs_module, "_persist_last_fetch", lambda ms: None)
+    # 交易日守卫是本函数写盘段的前置 gate; 本测试只验证指数写盘不被监控规则
+    # 门控, 显式声明今天为交易日以隔离周末运行 (休市不落盘由守卫自身负责)
+    monkeypatch.setattr("app.services.trading_day.is_trading_day", lambda now=None: True)
     monkeypatch.setattr(qs, "_update_volume_delta", lambda *a, **k: None)
     monkeypatch.setattr(qs, "_evaluate_monitors", lambda *a, **k: None)
     monkeypatch.setattr(qs, "_broadcast_quote_updated", lambda: None)
@@ -149,3 +152,80 @@ def test_index_live_write_without_monitor_rules(monkeypatch) -> None:
 
     assert repo.merge_calls == [("index", ["000001.SH"])]
     assert ("index", True, ["000001.SH"]) in flush_calls
+
+
+def test_full_market_records_skips_persist_on_holiday(monkeypatch) -> None:
+    """休市日 (交易日探针 False) 行情快照一律不落盘。
+
+    实证 2026-10-04 (周日): 手动 refresh 绕过轮询门控, fqgate 快照价格停在
+    上一交易日, _build_daily 用 cn_today() 标日期 → 写出假日K线, 连板全体+1。
+    守卫: is_trading_day() is False → 只更新展示缓存, daily/enriched/index 全拦。
+    """
+    from datetime import datetime, time as dt_time
+    from types import SimpleNamespace
+
+    from app.market_time import CN_TZ, cn_today
+    import app.services.quote_service as qs_module
+    from app.services.quote_service import QuoteService
+
+    class _Engine:
+        def has_asset_rules(self, asset_type: str) -> bool:
+            return False
+
+    class _Repo:
+        def __init__(self) -> None:
+            self.merge_calls: list[tuple[str, list[str]]] = []
+            self.flush_calls: list[str] = []
+
+        def get_index_symbol_set(self) -> set:
+            return set()
+
+        def get_etf_instruments(self):
+            return pl.DataFrame()
+
+        def flush_live_daily(self, df) -> None:
+            self.flush_calls.append("daily")
+
+        def flush_live_daily_asset(self, asset_type: str, df) -> None:
+            self.flush_calls.append(asset_type)
+
+        def merge_live_daily_asset(self, asset_type: str, df) -> None:
+            self.merge_calls.append((asset_type, df["symbol"].to_list()))
+
+    qs = QuoteService()
+    repo = _Repo()
+    qs._repo = repo
+    qs._app_state = SimpleNamespace(monitor_engine=_Engine())
+    flush_calls: list[tuple[str, bool, list[str]]] = []
+    monkeypatch.setattr(qs_module, "_persist_last_fetch", lambda ms: None)
+    monkeypatch.setattr("app.services.trading_day.is_trading_day", lambda now=None: False)
+    monkeypatch.setattr(qs, "_update_volume_delta", lambda *a, **k: None)
+    monkeypatch.setattr(qs, "_evaluate_monitors", lambda *a, **k: None)
+    monkeypatch.setattr(qs, "_broadcast_quote_updated", lambda: None)
+    monkeypatch.setattr(
+        qs,
+        "_flush_live_enriched",
+        lambda df, extra=None, asset_type="stock", merge=False: flush_calls.append(
+            (asset_type, merge, df["symbol"].to_list())
+        ),
+    )
+
+    ts = int(datetime.combine(cn_today(), dt_time(10, 0), tzinfo=CN_TZ).timestamp() * 1000)
+    qs._process_full_market_records(
+        [{
+            "symbol": "000001.SH",
+            "last_price": 3001.0,
+            "open": 3000.0,
+            "high": 3010.0,
+            "low": 2990.0,
+            "volume": 1000,
+            "amount": 10000.0,
+            "timestamp": ts,
+        }],
+        t0=0.0,
+        now_ts=0.0,
+    )
+
+    assert repo.merge_calls == []
+    assert repo.flush_calls == []
+    assert flush_calls == []

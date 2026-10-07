@@ -144,6 +144,8 @@ def test_sync_instruments_interrupted_keeps_existing_table(tmp_path: Path, crash
     target = tmp_path / "instruments" / "instruments.parquet"
     old = _instruments(["浦发银行", "平安银行"])
     _seed(old, target)
+    # 声明今天为交易日: sync_instruments 休市日会直接跳过 (2026-10-04 守卫)
+    monkeypatch.setattr("app.services.trading_day.is_trading_day", lambda now=None: True)
     monkeypatch.setattr(
         instrument_sync, "_fetch_instruments_via_provider",
         lambda: [{"symbol": "600036.SH", "name": "招商银行"}],

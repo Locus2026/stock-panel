@@ -76,7 +76,18 @@ def sync_instruments(data_dir: Path) -> int:
     """全量同步标的维表 → data/instruments/instruments.parquet。
 
     返回写入的行数。
+    休市日直接跳过 (返回 0): 维表 limit_up/limit_down 来自实时快照, 休市时
+    停留在上一交易日的值, 若写 as_of=今天 会被 enrich 管道当「今天的权威
+    涨跌停价」→ 休市日一旦混入假K线 (close=上一交易日涨停价) 会被判涨停,
+    连板全体 +1 (2026-10-04 周日实证)。cron 本就 mon-fri, 此守卫兜底手动/
+    其他触发路径。
     """
+    from app.services import trading_day
+
+    if trading_day.is_trading_day() is False:
+        logger.info("交易日探针判定休市, 跳过标的维表同步 (避免 as_of 错锚)")
+        return 0
+
     all_rows = _fetch_instruments_via_provider()
     if all_rows is None:
         # 未命中非 tickflow provider → 走 tickflow 直连

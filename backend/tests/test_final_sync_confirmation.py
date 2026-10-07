@@ -60,6 +60,9 @@ def service(monkeypatch) -> tuple[QuoteService, _StubRepo, dict]:
     qs._repo = repo
     events: dict[str, int] = {"broadcast": 0, "enriched": 0}
     monkeypatch.setattr(qs_module, "_persist_last_fetch", lambda ms: None)
+    # 声明今天为交易日: 落盘段前置的休市守卫会拦截全部写盘 (2026-10-04 守卫),
+    # 本文件验证的是 final 定版语义, 与休市无关
+    monkeypatch.setattr("app.services.trading_day.is_trading_day", lambda now=None: True)
     monkeypatch.setattr(qs, "_update_volume_delta", lambda *a, **k: None)
     monkeypatch.setattr(qs, "_evaluate_monitors", lambda *a, **k: None)
     monkeypatch.setattr(qs, "_broadcast_quote_updated", lambda: events.__setitem__("broadcast", events["broadcast"] + 1))

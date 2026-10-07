@@ -217,9 +217,21 @@ def get_minute_refresh_interval() -> int:
     )
 
 
-# ===== 数据源选择 (默认 TickFlow；第一阶段仅日K切换入口) =====
-
-_ALLOWED_DATA_PROVIDERS = {"tickflow"}
+# ===== 数据源选择 (默认 FQGate 本机同花顺) =====
+#
+# 2026-10-04 起默认数据源由 tickflow 改为 fqgate(本机 FQGate / 同花顺, 127.0.0.1:17281)。
+# tickflow 从**默认**降级为**回退源**: fqgate 未声明的数据集仍回退 tickflow, 保证不断供。
+# 截至 2026-10-05, fqgate 已覆盖 daily / realtime / minute / adj_factor / depth5 /
+# full_minute, 实际仅 financial 回退 tickflow。
+#
+# 保留 tickflow 的原因 (勿贸然删除):
+#   - fqgate 不提供除权因子与财务数据, 删除即断供, 直接影响复权价与涨停判定
+#   - fqgate 分钟K 时间字段是内部流水号(跨日累计), 不可还原 → minute 仍需 tickflow
+#   - app/tickflow/repository.py(2458 行) 是**数据存储层**(Parquet/DuckDB/enriched),
+#     与数据源无关, 只是历史上住在 tickflow/ 目录下, 被 30+ service 依赖, 绝不能删
+_DEFAULT_DATA_PROVIDER = "fqgate"
+_FALLBACK_DATA_PROVIDER = "tickflow"
+_ALLOWED_DATA_PROVIDERS = {_DEFAULT_DATA_PROVIDER, _FALLBACK_DATA_PROVIDER}
 DATA_SOURCE_JOB_TIMEOUT_MIN_S = 60
 
 
@@ -271,39 +283,39 @@ def _allowed_data_providers() -> set[str]:
 
 
 def get_daily_data_provider() -> str:
-    provider = str(load().get("daily_data_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _allowed_data_providers() else "tickflow"
+    provider = str(load().get("daily_data_provider", _DEFAULT_DATA_PROVIDER) or _DEFAULT_DATA_PROVIDER).lower()
+    return provider if provider in _allowed_data_providers() else _DEFAULT_DATA_PROVIDER
 
 
 def get_adj_factor_provider() -> str:
-    # 「跟随日K」(same_as_daily) 特殊值已下线: 存量配置里的旧值按非法值回退 tickflow
-    provider = str(load().get("adj_factor_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _allowed_data_providers() else "tickflow"
+    # 「跟随日K」(same_as_daily) 特殊值已下线: 存量配置里的旧值按非法值回退默认源
+    provider = str(load().get("adj_factor_provider", _DEFAULT_DATA_PROVIDER) or _DEFAULT_DATA_PROVIDER).lower()
+    return provider if provider in _allowed_data_providers() else _DEFAULT_DATA_PROVIDER
 
 
 def get_minute_data_provider() -> str:
-    provider = str(load().get("minute_data_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _allowed_data_providers() else "tickflow"
+    provider = str(load().get("minute_data_provider", _DEFAULT_DATA_PROVIDER) or _DEFAULT_DATA_PROVIDER).lower()
+    return provider if provider in _allowed_data_providers() else _DEFAULT_DATA_PROVIDER
 
 
 def get_full_minute_data_provider() -> str:
-    provider = str(load().get("full_minute_data_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _allowed_data_providers() else "tickflow"
+    provider = str(load().get("full_minute_data_provider", _DEFAULT_DATA_PROVIDER) or _DEFAULT_DATA_PROVIDER).lower()
+    return provider if provider in _allowed_data_providers() else _DEFAULT_DATA_PROVIDER
 
 
 def get_depth5_data_provider() -> str:
-    provider = str(load().get("depth5_data_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _allowed_data_providers() else "tickflow"
+    provider = str(load().get("depth5_data_provider", _DEFAULT_DATA_PROVIDER) or _DEFAULT_DATA_PROVIDER).lower()
+    return provider if provider in _allowed_data_providers() else _DEFAULT_DATA_PROVIDER
 
 
 def get_realtime_data_provider() -> str:
-    provider = str(load().get("realtime_data_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _allowed_data_providers() else "tickflow"
+    provider = str(load().get("realtime_data_provider", _DEFAULT_DATA_PROVIDER) or _DEFAULT_DATA_PROVIDER).lower()
+    return provider if provider in _allowed_data_providers() else _DEFAULT_DATA_PROVIDER
 
 
 def get_financial_provider() -> str:
-    provider = str(load().get("financial_data_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _allowed_data_providers() else "tickflow"
+    provider = str(load().get("financial_data_provider", _DEFAULT_DATA_PROVIDER) or _DEFAULT_DATA_PROVIDER).lower()
+    return provider if provider in _allowed_data_providers() else _DEFAULT_DATA_PROVIDER
 
 
 # ===== 盘后管道拉取内容开关 (A股 / ETF / 指数 独立控制) =====

@@ -873,6 +873,20 @@ class QuoteService:
         # 轮询放量状态更新 (volume_delta 规则的差值来源)
         self._update_volume_delta(stock_records, fetched_at)
 
+        # ---- 交易日守卫: 休市日快照不落盘 ----
+        # 实证 (2026-10-04 周日): refresh() 手动路径绕过轮询门控 (_poll_loop 有
+        # _holiday_gate, 这里原本没有), fqgate 快照价格停留在上一交易日 (09-30),
+        # _build_daily 用 cn_today() 标日期 → 写出 date=10-04 的假K线 (OHLCV 与
+        # 09-30 完全相同), 连板天梯全体 +1、K线多一条重复蜡烛。
+        # 展示缓存与 SSE 通知照常, 仅拦截写盘; is_trading_day() 周末零成本直判,
+        # 工作日结论有 TTL 缓存, 无额外请求开销。
+        from app.services import trading_day
+
+        if trading_day.is_trading_day() is False:
+            logger.info("交易日探针判定休市, 行情快照不落盘 (展示缓存已更新)")
+            self._broadcast_quote_updated()
+            return
+
         # ---- 写 kline_daily (不复权原始价格, 只有 OHLCV) ----
         daily_df = self._build_daily(stock_records)
         if not daily_df.is_empty() and self._repo:

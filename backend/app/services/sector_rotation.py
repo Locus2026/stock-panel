@@ -48,6 +48,11 @@ _ALLOWED_BUCKETS = (1, 5, 15)
 # 切换走势的对照窗口 (分钟): t 桶与 t-_RANK_WINDOW_MIN 前的桶比较排名
 _RANK_WINDOW_MIN = 60
 # rotation 计算取的领涨梯队宽度
+# 样本覆盖率阈值: 有当日分钟K 的成分占比 < 此值 → 标记 thin(代表性不足)。
+# 15% 为经验阈值: 低于此比例时"等权均值"会被少数个股主导, 不能当行业整体看。
+# 实测 2026-10-05: 分钟K 仅 4 只 → 388 个概念里 63 个只有 1 只成分命中(占比 <1%)。
+_COVERAGE_MIN_RATIO = 0.15
+
 _TOP_OVERLAP = 10
 # 活跃度窗口 (分钟): 板块活跃度 = 最近该时长内成分股成交额合计
 _ACTIVITY_WINDOW_MIN = 30
@@ -556,6 +561,24 @@ def _compute(repo, data_dir: Path, kind: str, flow_field: str | None, top: int, 
     pcts_now = dict(zip(names, per_bucket[-1]["pct"], strict=True))
     pct_values = [pcts_now.get(name) for name in names]
     pct_norm = _normalize_0_100(pct_values)
+
+    # 样本覆盖率 (0~1) 与是否"代表性不足"。
+    #
+    # ⚠️ 实测 2026-10-05 的严重问题: 本地全市场分钟K 仅 4 只, 而概念成员表
+    # 140662 行 / 388 个概念 → 「文化传媒」394 只成分只有 1 只有分钟K,
+    # 表里显示的 +9.99% 实为**新华传媒 600825 一只股票的涨幅**(+9.9894%)。
+    # 用户会误读成"整个文化传媒行业涨 9.99%" —— 这是数据不透明, 必须显式披露。
+    #
+    # 阈值 _COVERAGE_MIN_RATIO: 有分钟K 的成分占比低于此值 → thin=True。
+    # 0.15 = 至少 15% 成分参与才视为有代表性 (对齐"样本覆盖率"常用经验阈值)。
+    coverage: dict[str, float | None] = {}
+    thin: dict[str, bool] = {}
+    for name in all_names:
+        total = members_count_by_sector.get(name, 0)
+        bars = n_with_bars.get(name, 0)
+        ratio = (bars / total) if total else None
+        coverage[name] = round(ratio, 4) if ratio is not None else None
+        thin[name] = bool(ratio is not None and ratio < _COVERAGE_MIN_RATIO)
     flow_values = [flow_by_member.get(name) for name in names] if flow_available else [None] * len(names)
     flow_norm = _normalize_0_100(flow_values) if flow_available else [None] * len(names)
 
@@ -580,6 +603,10 @@ def _compute(repo, data_dir: Path, kind: str, flow_field: str | None, top: int, 
             "score": round(score, 2) if score is not None else None,
             "n_members": members_count_by_sector.get(name, 0),
             "n_members_with_bars": n_with_bars.get(name, 0),
+            # 样本覆盖率(0~1) 与 thin 标记: 前端必须据此披露, 避免把
+            # "少数成分股涨幅" 误读成 "行业整体涨幅"
+            "coverage": coverage.get(name),
+            "thin": thin.get(name, False),
         })
     sectors.sort(key=lambda item: (item["score"] is not None, item["score"] or 0.0), reverse=True)
 
@@ -591,6 +618,8 @@ def _compute(repo, data_dir: Path, kind: str, flow_field: str | None, top: int, 
             "activity": _r4(activity_map.get(name)) if has_amount else None,
             "n_members": members_count_by_sector.get(name, 0),
             "n_members_with_bars": n_with_bars.get(name, 0),
+            "coverage": coverage.get(name),
+            "thin": thin.get(name, False),
             "excluded": not _auto_eligible(name, members_count_by_sector.get(name, 0), exclude_sectors),
         }
         for name in all_names
