@@ -1,0 +1,44 @@
+# FQGate — 本机同花顺行情网关数据源插件
+#
+# 通过本机 FQGate 主程序 (默认 127.0.0.1:17281) 取 A 股行情, 替换 TickFlow。
+# 与 TickFlow 无关: 不需要 API Key, 不受套餐档位限制。
+# 前置条件: FQGate 主程序已启动且行情节点已连接 (游客或账号登录均可)。
+#
+# 数据集边界 (只声明真实可用的, 其余自动回退 TickFlow):
+#   daily     日K, adjust=None 原始价 (单标的 interval=day, provider 内部分片+限速)
+#   realtime  全市场快照 (「汇总」+「基础数据」两组字段合并, 后者补开盘价)
+#   adj_factor 除权因子。由 corporate-action 事件(送/转增/配股/红利)按交易所口径
+#             推导, 基准价取**前一日收盘价**(日K 无「前收盘」字段, 勿误用当日收盘)
+#   depth5    Level-2 五档盘口; 仅交易时段有数据, 休市日上游 400 → 返回空
+#   minute    1分钟K。时间已还原: 流水号仅用于切分日边界, 时刻由帧序按交易时段
+#             映射, 真实日期取自日K(权威)。实测 241 根/日, 09:30→15:00 严格单调,
+#             午休正确跨 11:30→13:00。详见 provider.py docstring「分钟K 时间逆向」
+#   full_minute 盘中全市场分钟(全量分钟能力)。FQGate 无批量分钟端点, 逐只并发拉
+#             (默认 8 线程, 可调 FQGATE_MINUTE_WORKERS); 日期锚定交易日历(一次
+#             请求)而非逐只日K, 末帧流水号取全市场众数以剔除停牌/未推送标的。
+#             实测全市场 ~5000 只约 45s/轮。
+# 未声明: financial
+#
+# 框架契约外但已实现的公开方法(供自建脚本/MCP 直接调用):
+#   get_call_auction(symbols, date)         竞价 9:15-9:25 逐帧, date 可回溯历史
+#   get_limit_up_statistics(date, HS)       涨跌停统计(封板/开板/封板率), 可回溯
+#   两者字段均经实测恒等式验证, 详见 provider.py 注释
+
+name: fqgate
+display_name: "FQGate (本机同花顺)"
+runtime: none
+entry: app.plugins.fqgate.provider:FqgateProvider
+check: app.plugins.fqgate.provider:availability
+datasets: [daily, realtime, minute, adj_factor, depth5, full_minute]
+description: >-
+  本机 FQGate (同花顺行情网关, 127.0.0.1:17281) 数据源。
+  日K / 全市场实时快照 / 1分钟K / 盘中全市场分钟, 均为原始价(不复权)。
+  游客登录即可用但数据可能延迟, 登录同花顺账号可获极速行情。
+  快照涨跌幅与振幅已按项目契约由百分数转小数制, 成交量由股转手;
+  换手率 FQGate 未提供可靠字段, 交由 pipeline 按价格与股本口径重算。
+  Level-2 五档盘口仅交易时段可用, 档位数组未做映射(不猜字段号), 只输出核心价量。
+  另提供集合竞价序列与涨跌停统计两个公开方法(框架外, 需自建脚本调用)。
+  财务数据未声明(端点需显式传 fields 且字段编号语义未定义), 自动回退 TickFlow。
+  除权因子需前收盘基准, 故 2014 年之前的事件返回 ex_factor=None(不猜)。
+install_hint: "请先启动 FQGate 主程序 (默认监听 127.0.0.1:17281), 并确认行情节点已连接; 如需改地址设环境变量 FQGATE_BASE_URL, 超时设 FQGATE_TIMEOUT"
+homepage: "http://127.0.0.1:17281/docs"

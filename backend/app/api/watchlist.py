@@ -1,6 +1,7 @@
 """自选股 API。"""
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time
@@ -27,6 +28,11 @@ from app.services.watchlist_ocr.provider import get_ocr_provider
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
+
+# 盘中增强 (竞价涨幅 / 最相关概念) 的端点级硬预算 (秒)。
+# 服务层已有「非交易日短路 + 线程池并发 + 8~10s 单请求超时」, 这道是最后兜底:
+# 上游整体抽风时也要在预算内返回, 绝不让前端等满 30s 报超时。
+_ENRICH_BUDGET_S = 12.0
 
 _MAX_IMPORT_IMAGE_BYTES = 12 * 1024 * 1024  # 12MB
 _IMPORT_IMAGE_TYPES = {
@@ -575,6 +581,27 @@ def watchlist_enriched(
             .alias("limit_down_price"),
         )
 
+    # 流通市值 (元) — 读时现算, 不落盘。
+    # 恒等式(项目 scoring.py:log_float_mv 同源): turnover_rate(%) = 成交量(手)*100/流通股本*100
+    #   ⇒ 流通股本 = 成交量(手) * 10000 / turnover_rate
+    #   ⇒ float_mv = close × 流通股本
+    # 实测校验(2026-10-05): 平安银行算出 224,523,775,346 vs fqgate 快照实测
+    # 224,526,470,000，偏差 0.0012% —— 口径确认一致(流通市值, 非总市值)。
+    # 任一输入缺失/非正 → None(前端渲染 "—")，不做填充。
+    if {"symbol", "close", "volume", "turnover_rate"}.issubset(df.columns):
+        df = df.with_columns(
+            pl.when(
+                pl.col("close").is_not_null()
+                & pl.col("volume").is_not_null()
+                & (pl.col("volume") > 0)
+                & pl.col("turnover_rate").is_not_null()
+                & (pl.col("turnover_rate") > 0)
+            )
+            .then(pl.col("close") * pl.col("volume") * 10000.0 / pl.col("turnover_rate"))
+            .otherwise(None)
+            .alias("float_mv")
+        )
+
     # 「加入日期」与「加入以来」— 与涨跌停价同为读时现算, 不落盘。只在这一处挂一次即
     # 覆盖 stock/etf/index 三分支。pct_since_added 为小数口径 (与 momentum_* 一致)。
     try:
@@ -683,6 +710,73 @@ def watchlist_enriched(
     rows = df.to_dicts()
     elapsed = (time.perf_counter() - t0) * 1000
     return {"rows": rows, "as_of": str(as_of) if as_of else None, "elapsed_ms": elapsed}
+
+
+@router.get("/intraday-enrichment")
+async def watchlist_intraday_enrichment(
+    request: Request,
+    trade_date: str | None = Query(
+        None, pattern=r"^\d{8}$", description="竞价交易日 YYYYMMDD; 省略取当日"
+    ),
+):
+    """自选列表盘中增强 —— 竞价涨幅 + 最相关概念板块。
+
+    与 `/enriched` 分开的原因: 这两列依赖 **fqgate 上游**(集合竞价 / 板块目录),
+    属外部 I/O 且有 60s/30min 缓存; `/enriched` 是纯本地 parquet 读取(亚毫秒级)。
+    前端应**独立请求**本端点, 使上游抖动不阻塞列表主体渲染。
+
+    返回:
+      {
+        "auction_pct": {symbol: 涨跌幅%},     # 仅 09:25 后有值, 否则空
+        "concepts":    {symbol: [[名称, 成分数], ...]},  # 升序(最精准在前)
+        "warnings":    [str, ...],            # 上游异常/未到竞价时, 前端可自披露
+      }
+    """
+    entries = watchlist.list_symbols()
+    symbols = [r["symbol"] for r in entries]
+    if not symbols:
+        return {"auction_pct": {}, "concepts": {}, "warnings": []}
+
+    from app.services.intraday_enrichment import auction_pct_map, concepts_of
+
+    # 两列都软失败: 各自返回 (映射, 警告), 任一失败不影响另一列与主查询。
+    # 两者互不依赖 → 并发; 整体加 12s 硬预算 (2026-10-05: 上游休市日挂 30s/只,
+    # 串行 29 只把前端拖到 30s 超时。服务层已有"非交易日短路 + 线程池 + 8~10s
+    # 单请求超时", 这里再加一道端点级兜底: 预算内拿不到就返回部分/空 + warning,
+    # 绝不让前端等满 30s)。
+    async def _call(fn, *args):
+        return await asyncio.to_thread(fn, *args)
+
+    warnings: list[str] = []
+    auction: dict[str, float] = {}
+    concepts: dict[str, list[tuple[str, int]]] = {}
+    # asyncio.wait 而非 wait_for(gather): 超预算时**保留已完成那路的结果**,
+    # 只丢弃还在挂起的那路 (回溯历史日期时上游 call-auction 可能整段超时,
+    # 但概念列往往已拿到, 不该被一起丢掉)。
+    t_auction = asyncio.ensure_future(_call(auction_pct_map, symbols, trade_date))
+    t_concepts = asyncio.ensure_future(_call(concepts_of, symbols, 3))
+    done, pending = await asyncio.wait({t_auction, t_concepts}, timeout=_ENRICH_BUDGET_S)
+    if t_auction in done:
+        auction, warns_a = t_auction.result()
+        warnings.extend(warns_a)
+    if t_concepts in done:
+        concepts, warns_c = t_concepts.result()
+        warnings.extend(warns_c)
+    if pending:
+        names = []
+        if t_auction in pending:
+            names.append("竞价")
+        if t_concepts in pending:
+            names.append("概念")
+        warnings.append(
+            f"{'/'.join(names)}上游超预算({_ENRICH_BUDGET_S:.0f}s), 该列本次显示 —"
+        )
+
+    return {
+        "auction_pct": auction,
+        "concepts": {k: [list(x) for x in v] for k, v in concepts.items()},
+        "warnings": warnings,
+    }
 
 
 def _parse_ext_columns(ext_columns: str) -> list[tuple[str, str]]:

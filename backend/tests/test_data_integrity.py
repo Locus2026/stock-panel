@@ -24,6 +24,7 @@ from app.services.data_integrity import (
     _trading_calendar,
     earliest_issue_day,
     prune_enriched_partitions,
+    purge_non_trading_partitions,
     scan_recent_integrity,
     within_auto_repair_window,
 )
@@ -424,8 +425,18 @@ def test_realtime_gate_blocks_on_snapshot_and_launches_repair(tmp_path, monkeypa
     from app.api import settings as settings_api
     from app.services import data_integrity
 
-    real_today = datetime.now(CN_TZ).date()
-    snapshot_day = _recent_trading_day_before(real_today)
+    # 「今天」冻结在 2026-09-30, 快照日 09-29 → 窗口恒为 1 天 ≤ 5。
+    # 原因与 _freeze_integrity_clock 的 docstring 相同: AUTO_REPAIR_MAX_LAG_DAYS=5,
+    # 原先本测试用 datetime.now(), 随真实日期漂移必然过期 (2026-10-07 实测已变红)。
+    real_today = _freeze_integrity_clock(monkeypatch, date(2026, 9, 30))
+    snapshot_day = date(2026, 9, 29)
+
+    # 隔离真实日历/周末: 把今天与快照日都声明为「交易日」, 保证本测试只验证
+    # 盘中快照语义 (今天分区若是非交易日, 应由 non_trading_day 检测负责)
+    monkeypatch.setattr(
+        data_integrity, "_trading_calendar",
+        lambda: {snapshot_day, real_today},
+    )
     _write_daily_partition(
         tmp_path, "kline_daily", snapshot_day,
         _ts_ms(snapshot_day, time(11, 58)),
@@ -540,14 +551,17 @@ def test_boot_check_launches_repair_within_window(tmp_path, monkeypatch):
     from app.services import data_integrity
 
     # boot_integrity_check 用真实"今天" — 往回找最近工作日造盘中快照分区
+    # 「今天」冻结(2026-10-07 修): 原用 datetime.now(), 快照日取「今天之前的最近
+    # 交易日」, 差值随日期漂移; 超过 AUTO_REPAIR_MAX_LAG_DAYS=5 后自愈不再触发 →
+    # 本测试必然失败 (见 _freeze_integrity_clock 的 docstring)。
     launched = []
     monkeypatch.setattr(
         data_integrity, "launch_integrity_repair",
         lambda state, day, reason: (launched.append(day) or ("job-x", True)),
     )
 
-    real_today = datetime.now(CN_TZ).date()
-    probe = _recent_trading_day_before(real_today)
+    real_today = _freeze_integrity_clock(monkeypatch, date(2026, 9, 30))
+    probe = date(2026, 9, 29)
     data_dir = tmp_path / "boot"
     _write_daily_partition(data_dir, "kline_daily", probe, _ts_ms(probe, time(11, 58)))
     _write_daily_partition(data_dir, "kline_daily", real_today, _ts_ms(real_today, time(10, 0)))
@@ -692,6 +706,32 @@ def _patch_fuyao_calendar(monkeypatch, days):
     di._CAL = (0.0, None)  # 清缓存, 强制本用例走自己的日历
 
 
+def _freeze_integrity_clock(monkeypatch, frozen_day: date):
+    """把 data_integrity 的"今天"冻结到 frozen_day (2026-10-07 修)。
+
+    **为什么需要**: 完整性门禁只在坏日落在 `AUTO_REPAIR_MAX_LAG_DAYS`(5 天)
+    窗口内才拦截/自愈, 而这类测试原先用 `datetime.now()` 取"今天"、再用
+    `_recent_trading_day_before()` 造一个昨天的坏分区。两者之差随真实日期漂移:
+    测试写好当天差 0~1 天能过, 几天后就变成"超出修复窗口" → 门禁放行 →
+    测试莫名失败。实测 2026-10-07: 快照日 09-30 距今 7 天 > 5 → 两个用例同时变红。
+
+    断言要稳定, 就不能把真实时钟写进期望 —— 统一冻结在固定日期, 窗口判定恒定。
+    """
+    from app.services import data_integrity
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001, ANN206
+            return (
+                datetime(frozen_day.year, frozen_day.month, frozen_day.day, 10, 0, tzinfo=tz)
+                if tz
+                else datetime(frozen_day.year, frozen_day.month, frozen_day.day, 10, 0)
+            )
+
+    monkeypatch.setattr(data_integrity, "datetime", _FrozenDatetime)
+    return frozen_day
+
+
 def _recent_trading_day_before(day: date) -> date:
     """严格早于 day 的最近交易日: 日历可用按日历, 否则周几近似。
 
@@ -752,3 +792,34 @@ def test_scan_no_false_missing_when_etf_lags_over_holiday(tmp_path, monkeypatch)
     for day in (date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24)):
         _write_daily_partition(tmp_path, "kline_etf_daily", day, None)
     assert scan_recent_integrity(tmp_path, today=date(2026, 9, 28)) == []
+
+
+def test_non_trading_day_partition_detected_and_purged(tmp_path, monkeypatch):
+    """假日误写分区 (2026-10-04 周日手动 refresh 实证): 不论 quote_ts 一律报坏。
+
+    quote_ts 时刻 23:46 ≥ 15:00 会绕过「盘中快照」判据并被视为尾盘定版,
+    因此非交易日检测必须与 quote_ts 无关; 清理时 daily + enriched 同日一起删。
+    """
+    _patch_fuyao_calendar(monkeypatch, _CAL_FAKE_2026_09)
+    # 09-26 在日历外 (中秋休市): 模拟休市日 flush 写出的假分区
+    _write_daily_partition(tmp_path, "kline_daily", date(2026, 9, 26), None)
+    _write_daily_partition(tmp_path, "kline_daily_enriched", date(2026, 9, 26), None)
+
+    issues = scan_recent_integrity(tmp_path, today=date(2026, 9, 28))
+    kinds = {(i.day, i.table, i.kind) for i in issues}
+    assert (date(2026, 9, 26), "kline_daily", "non_trading_day") in kinds
+
+    purged = purge_non_trading_partitions(tmp_path, issues)
+    assert purged == [date(2026, 9, 26)]
+    assert not (tmp_path / "kline_daily" / "date=2026-09-26").exists()
+    assert not (tmp_path / "kline_daily_enriched" / "date=2026-09-26").exists()
+
+
+def test_non_trading_day_falls_back_to_weekday_when_no_calendar(tmp_path, monkeypatch):
+    """日历不可用时退回周几近似: 周末分区仍报坏 (工作日节假日漏检由源头守卫兜底)。"""
+    di._CAL = (0.0, None)  # 日历缓存置空 → 周几近似
+    _write_daily_partition(tmp_path, "kline_daily", date(2026, 9, 26), None)  # 周六
+    issues = scan_recent_integrity(tmp_path, today=date(2026, 9, 28))
+    assert any(
+        i.day == date(2026, 9, 26) and i.kind == "non_trading_day" for i in issues
+    )

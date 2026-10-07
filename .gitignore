@@ -109,3 +109,14 @@ TickFlowStockPanel.app/
 TickFlowStockPanel-macos*.dmg
 TickFlowStockPanel-macos*.zip
 reports/cursor_tickflow_pro_rate_limit_p0.bundle
+
+# ── 本地运行产物 / AI 工作区 (2026-10-07 新增) ──────────────────
+# 隔离区: 数据完整性修复时被判定"坏"的分区暂存处(56M), 只在本机保留,
+# 不入版本库(它是**运行数据**, 与 data/ 同性质)。
+.quarantine-*/
+# AI agent 的工作记忆(逐日日志/长期笔记), 属个人笔记而非项目代码。
+.workbuddy/
+# vite 加载配置时生成的临时文件(进程非正常退出时会残留)
+frontend/vite.config.ts.timestamp-*.mjs
+# 根目录一次性排查脚本(临时产物, 非项目代码)
+tmp_test_fin.py

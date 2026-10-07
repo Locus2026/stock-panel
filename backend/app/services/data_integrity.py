@@ -58,7 +58,33 @@ TABLE_FAMILY = {
 class IntegrityIssue:
     day: date
     table: str
-    kind: str  # "snapshot"=盘中快照 | "missing"=分区缺失
+    kind: str  # "snapshot"=盘中快照 | "missing"=分区缺失 | "non_trading_day"=假日误写
+
+
+def _non_trading_partition_days(data_dir: Path, table: str, today: date) -> list[date]:
+    """找出 table 中日期不在交易日历内的分区 (假日误写, 无论 quote_ts 一律坏)。
+
+    实证 (2026-10-04 周日): 休市日手动 refresh 绕过轮询门控, fqgate 快照价格
+    停在上一交易日, _build_daily 用 cn_today() 标日期 → date=10-04 假K线,
+    且 quote_ts 时刻 23:46 ≥ 15:00 会被「尾盘定版」判据豁免 → 永久留存。
+    日历不可用时退回周几近似 (周末必坏; 工作日节假日漏检由源头守卫兜底)。
+    """
+    base = data_dir / table
+    if not base.exists():
+        return []
+    calendar = _trading_calendar()
+    bad: list[date] = []
+    for part in base.glob("date=*"):
+        try:
+            d = date.fromisoformat(part.name[5:])
+        except ValueError:
+            continue
+        if d > today:
+            continue
+        is_trading = (d in calendar) if calendar is not None else (d.weekday() < 5)
+        if not is_trading:
+            bad.append(d)
+    return sorted(bad)
 
 
 def _quote_ts_max_ms(part_dir: Path) -> int | None:
@@ -255,6 +281,10 @@ def scan_recent_integrity(
         if latest is None or latest < window_start:
             continue
 
+        # 假日误写分区: 日期不在交易日历内, 与活动窗口无关 (历史残留也是坏的)
+        for day in _non_trading_partition_days(data_dir, table, today):
+            issues.append(IntegrityIssue(day=day, table=table, kind="non_trading_day"))
+
         for day in _candidate_days(today, lookback_days):
             if day not in existing:
                 # 只报"尾部缺口": 晚于本地最新分区的缺失日。
@@ -323,11 +353,40 @@ def describe_issues(issues: list[IntegrityIssue]) -> str:
     """面向用户的一句话描述 (409 详情 / 日志用)。"""
     if not issues:
         return ""
+    kinds = {i.kind for i in issues}
+    if "non_trading_day" in kinds:
+        days = sorted({i.day for i in issues if i.kind == "non_trading_day"})
+        return f"{'、'.join(d.isoformat() for d in days)} 为非交易日, 分区数据系误写"
     days = sorted({i.day for i in issues})
     day_text = "、".join(d.isoformat() for d in days)
-    kinds = {i.kind for i in issues}
     reason = "停机前的盘中快照" if "snapshot" in kinds else "缺失"
     return f"{day_text} 的数据为{reason}"
+
+
+def purge_non_trading_partitions(data_dir: Path, issues: list[IntegrityIssue]) -> list[date]:
+    """删除假日误写分区: daily 族当日分区 + 三族 enriched 同日分区。
+
+    这类分区不可能被 repair 重算覆盖 (数据源在非交易日永远不会返回该日期的
+    行, merge-upsert 覆盖不到), 必须物理删除。调用方需在删除后 bump enriched
+    generation 使 matrix 读侧缓存失效。返回被清理的日期。
+    """
+    import shutil
+
+    days = sorted({i.day for i in issues if i.kind == "non_trading_day"})
+    purged: list[date] = []
+    for d in days:
+        part = f"date={d.isoformat()}"
+        removed_any = False
+        for table in (*_DAILY_TABLES, "kline_daily_enriched", "kline_etf_enriched", "kline_index_enriched"):
+            target = Path(data_dir) / table / part
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+                removed_any = True
+        if removed_any:
+            purged.append(d)
+    if purged:
+        logger.warning("integrity: 已清理假日误写分区: %s", [d.isoformat() for d in purged])
+    return purged
 
 
 def launch_integrity_repair(app_state, start_date: date, reason: str) -> tuple[str | None, bool]:
@@ -442,6 +501,21 @@ def boot_integrity_check(app_state) -> None:
         return
     earliest = earliest_issue_day(issues)
     logger.warning("boot integrity check: %s (共 %d 个坏分区)", describe_issues(issues), len(issues))
+    # 假日误写分区物理删除 (repair 覆盖不到), 并 bump generation 失效读侧缓存
+    purged = purge_non_trading_partitions(repo.store.data_dir, issues)
+    if purged:
+        issues = [i for i in issues if i.kind != "non_trading_day" or i.day not in purged]
+        try:
+            from app.enriched_generation import bump_enriched_generation
+
+            for asset in ("stock", "etf", "index"):
+                with contextlib.suppress(Exception):
+                    bump_enriched_generation(repo.store.data_dir, asset)
+        except Exception:  # noqa: BLE001
+            logger.warning("integrity: bump generation 失败 (读侧缓存可能滞后)")
+        if not issues:
+            return
+        earliest = earliest_issue_day(issues)
     if not within_auto_repair_window(earliest):
         logger.warning(
             "integrity: 最早坏日 %s 超出自动修复窗口(%d 天), 请在数据页手动执行数据修正",
