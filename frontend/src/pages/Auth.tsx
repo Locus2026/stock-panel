@@ -15,7 +15,6 @@ import { useMutation } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import { Eye, EyeOff, Loader2, Lock, ShieldCheck, ShieldAlert, Sparkles } from 'lucide-react'
 import { api } from '@/lib/api'
-import { Logo } from '@/components/Logo'
 import { cn } from '@/lib/cn'
 
 export function Auth() {
@@ -86,10 +85,9 @@ export function Auth() {
         transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
         className="relative w-full max-w-sm"
       >
-        {/* Logo */}
+        {/* 品牌标识 — 纯文字 */}
         <div className="mb-6 flex flex-col items-center gap-2">
-          <Logo className="h-10 w-10" />
-          <h1 className="text-lg font-semibold text-foreground">Tick Stock Panel</h1>
+          <h1 className="text-lg font-semibold tracking-[0.14em] text-foreground">STOCK</h1>
         </div>
 
         <div className="rounded-card border border-border bg-surface/90 p-6 shadow-2xl backdrop-blur">

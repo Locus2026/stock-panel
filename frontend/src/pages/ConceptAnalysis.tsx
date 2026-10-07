@@ -24,6 +24,7 @@ import { storage } from '@/lib/storage'
 import { fmtBigNum, fmtPct, priceColorClass } from '@/lib/format'
 import { cn } from '@/lib/cn'
 import { resolveDimension, type DimensionGroup, type StockRow } from '@/lib/analysis-adapter'
+import { buildLabelIndex, refineConceptGroups } from '@/lib/concept-themes'
 import { SectorRotationCard } from '@/components/SectorRotationCard'
 
 const KEYWORDS = ['concept', '概念', 'theme', '题材', '板块']
@@ -292,12 +293,20 @@ export function ConceptAnalysis() {
     () => resolveDimension(rowsQuery.data, activeConfig, fieldConfig.dimensionField ? [fieldConfig.dimensionField, ...CANDIDATE_FIELDS] : CANDIDATE_FIELDS),
     [rowsQuery.data, activeConfig, fieldConfig.dimensionField],
   )
+  // 概念维度: 剔除交易/持股/地区等属性桶, 同产业链标签合并为主线族 (concept-themes.ts)
+  // labelIndex 供「人工智能」宽泛桶按个股标签动态分流 (算力硬件 vs 应用软件)
+  const conceptRows = rowsQuery.data?.rows as Record<string, unknown>[] | undefined
+  const conceptResolved = useMemo(() => {
+    if (!resolved.ok || !/概念|concept/i.test(resolved.dimensionField)) return resolved
+    const index = buildLabelIndex(conceptRows ?? [], resolved.dimensionField)
+    return { ...resolved, groups: refineConceptGroups(resolved.groups, index) }
+  }, [resolved, conceptRows])
 
   const stats = useMemo(() => {
-    return resolved.groups
+    return conceptResolved.groups
       .map(g => calcConceptStat(g, marketMap))
       .filter(s => s.count > 0)
-  }, [resolved.groups, marketMap])
+  }, [conceptResolved.groups, marketMap])
 
   const filteredStats = useMemo(() => {
     const q = search.trim().toLowerCase()

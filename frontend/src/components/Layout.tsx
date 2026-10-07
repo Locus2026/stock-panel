@@ -62,7 +62,6 @@ import {
   IconData,
   type BrandIconProps,
 } from './BrandIcons'
-import { Logo } from './Logo'
 import { api, type CapabilityMatrix, type IndexQuote } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { useIsDesktop } from '@/lib/useMediaQuery'
@@ -505,9 +504,11 @@ export function Layout() {
   const realtimeUnavailable = quoteMode === 'none'
   const isWatchlistMode = quoteMode === 'watchlist'
   const realtimeModeLabel = isWatchlistMode ? '自选股' : '全市场'
-  // 当前实时行情数据源名称 (插件/自定义源显示源名, tickflow 不显示)
+  // 当前实时行情数据源名称 (插件/自定义源显示源名)。
+  // 2026-10-04 起默认源为 fqgate(本机同花顺), 属插件 → 正常显示源名,
+  // 便于数据溯源。tickflow 降级为回退源(fqgate 未声明的数据集走它), 也显示。
   const realtimeProvider = prefs?.realtime_data_provider
-  const realtimeProviderName = realtimeProvider && realtimeProvider !== 'tickflow'
+  const realtimeProviderName = realtimeProvider
     ? (findDataSource(dataSources, realtimeProvider)?.display_name || realtimeProvider)
     : null
   const realtimeToggleDisabled = toggleQuote.isPending || isPaused
@@ -694,21 +695,18 @@ export function Layout() {
         )}
       >
         <div className={cn('border-b border-border shrink-0', railMode ? 'px-2 pt-3 pb-2' : 'px-4 pt-4 pb-3')}>
-          {/* Brand block — 收起时只显 logo 居中 */}
+          {/* Brand block — 纯文字标识, 不带图标; 收起时仅显示首字母 */}
           <div className={cn('flex', railMode ? 'flex-col items-center gap-2' : 'items-center gap-2')}>
-            <Logo
-              size={railMode ? 24 : 26}
-              className="shrink-0 drop-shadow-[0_0_8px_rgba(139,92,246,0.4)]"
-              style={{ color: BRAND }}
-            />
-            {!railMode && (
-              <div
-                className="font-bold text-[11px] uppercase tracking-[0.14em] text-foreground whitespace-nowrap"
-                style={{ textShadow: `0 0 10px ${BRAND}44` }}
-              >
-                Tick Stock Panel
-              </div>
-            )}
+            <div
+              className={cn(
+                'font-bold uppercase text-foreground whitespace-nowrap',
+                railMode ? 'text-[13px] tracking-[0.1em]' : 'text-[11px] tracking-[0.14em]',
+              )}
+              style={{ textShadow: `0 0 10px ${BRAND}44` }}
+              title="STOCK"
+            >
+              {railMode ? 'S' : 'STOCK'}
+            </div>
             {/* 收起/展开 按钮 (桌面三态循环) / 移动端抽屉关闭按钮 */}
             {isDesktop ? (
               <button

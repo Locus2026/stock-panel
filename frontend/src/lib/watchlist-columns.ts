@@ -41,6 +41,14 @@ export const BUILTIN_COLUMNS: ColumnConfig[] = [
   { id: 'builtin:volume', source: { type: 'builtin', key: 'volume' }, label: '成交量', visible: false, align: 'center' },
   { id: 'builtin:amount', source: { type: 'builtin', key: 'amount' }, label: '成交额', visible: false, align: 'center' },
   { id: 'builtin:float_val', source: { type: 'builtin', key: 'float_val' }, label: '流通值', visible: false, align: 'center' },
+  // 流通市值(元): 实时快照总市值口径, 与 float_val(成交额口径) 不同列
+  { id: 'builtin:float_mv', source: { type: 'builtin', key: 'float_mv' }, label: '流通市值', visible: true, align: 'center' },
+  // 集合竞价涨幅(%): 09:25 竞价对昨收的涨幅, 无竞价数据时为 null
+  { id: 'builtin:auction_pct', source: { type: 'builtin', key: 'auction_pct' }, label: '竞价涨幅', visible: true, align: 'center' },
+  // 最相关概念板块: 按当日涨停/涨幅贡献度取第一概念, 无则 null
+  { id: 'builtin:top_concept', source: { type: 'builtin', key: 'top_concept' }, label: '概念', visible: true, align: 'center' },
+  // 个股角色标注(龙头/中军/跟风/补涨/核心), 纯用户手工标记
+  { id: 'builtin:role_tag', source: { type: 'builtin', key: 'role_tag' }, label: '角色', visible: true, align: 'center' },
   { id: 'builtin:vol_ratio', source: { type: 'builtin', key: 'vol_ratio' }, label: '量比', visible: true, align: 'center' },
   { id: 'builtin:annual_vol', source: { type: 'builtin', key: 'annual_vol' }, label: '年化波动', visible: false, align: 'center' },
   // 均线
@@ -98,7 +106,9 @@ export const BUILTIN_COLUMNS: ColumnConfig[] = [
 export const COLUMN_GROUPS: ColumnGroup[] = [
   { id: 'price', label: '价格', icon: '💰', keys: ['price', 'pct', 'change_amount', 'amplitude', 'open', 'high', 'low', 'prev_close', 'limit_up_price', 'limit_down_price'] },
   { id: 'added', label: '自选', icon: '⭐', keys: ['added_at', 'pct_since_added'] },
-  { id: 'volume', label: '成交', icon: '📊', keys: ['turnover', 'volume', 'amount', 'float_val', 'vol_ratio', 'annual_vol'] },
+  { id: 'volume', label: '成交', icon: '📊', keys: ['turnover', 'volume', 'amount', 'float_val', 'float_mv', 'vol_ratio', 'annual_vol'] },
+  { id: 'auction', label: '竞价/概念', icon: '⚡', keys: ['auction_pct', 'top_concept'] },
+  { id: 'role', label: '标注', icon: '🏷', keys: ['role_tag'] },
   { id: 'ma', label: '均线', icon: '📈', keys: ['ma5', 'ma10', 'ma20', 'ma60'] },
   { id: 'range', label: '区间', icon: '📏', keys: ['high_60d', 'low_60d'] },
   { id: 'tech', label: '技术指标', icon: '🔬', keys: ['rsi6', 'rsi14', 'rsi24', 'macd_dif', 'macd_dea', 'macd_hist', 'kdj_k', 'kdj_d', 'kdj_j', 'boll_upper', 'boll_lower', 'atr14', 'vol_ma5', 'vol_ma10'] },

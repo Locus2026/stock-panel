@@ -17,6 +17,7 @@ import { useCapabilities, usePreferences } from '@/lib/useSharedQueries'
 import { SealedBadge } from '@/components/SealedBadge'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
 import type { ExtColumnDisplayConfig } from '@/lib/watchlist-columns'
+import { isThemeNoiseLabel } from '@/lib/concept-themes'
 
 // ===== Ext 字段配置 =====
 
@@ -67,17 +68,39 @@ const DEFAULT_BF: BrokenFailedConfig = {
   failedShow: true,
 }
 
+/**
+ * 默认概念字段 —— 内置同花顺概念预设 `ext_gn_ths`(零配置即可显示)。
+ *
+ * 此前默认 `{}` → 概念列没有任何数据源, 天梯里所有个股都不显示题材;
+ * 而"是否显示概念"已由 `showConcept` 开关负责(齿轮菜单), 数据源不应再当开关用。
+ * `所属概念` 用 ';' 拼接, 显式给 separator: 避免默认正则里的 '-' 拆坏带连字符的标签。
+ * maxTags: 单只票最多 4 个题材, 其余折叠(卡片空间有限, 完整列表点标签看成分股)。
+ */
+const DEFAULT_CONCEPT_FIELD = 'ext_gn_ths.所属概念'
+const DEFAULT_CONCEPT_MAX_TAGS = 4
+
+function defaultConceptItem(): ExtFieldItem {
+  return {
+    field: DEFAULT_CONCEPT_FIELD,
+    display: { displayMode: 'tag', separator: ';', maxTags: DEFAULT_CONCEPT_MAX_TAGS },
+  }
+}
+
 function loadExtFields(): ExtFieldConfig {
   const raw = storage.limitLadderExtFields.get({}) as any
-  if (!raw) return {}
+  // storage 缺省是 `{}` (truthy), 所以按"有没有 concept 项"判断, 不能只判 !raw
+  if (!raw || (!raw.concept && !raw.industry)) {
+    return { concept: defaultConceptItem() }
+  }
   // 兼容旧格式 { concept: "id.field", conceptSep: "x" }
   if (typeof raw.concept === 'string') {
     return {
-      concept: raw.concept ? { field: raw.concept, display: { displayMode: 'tag', separator: raw.conceptSep } } : undefined,
+      concept: raw.concept ? { field: raw.concept, display: { displayMode: 'tag', separator: raw.conceptSep } } : defaultConceptItem(),
       industry: raw.industry ? { field: raw.industry, display: { displayMode: 'tag', separator: raw.industrySep } } : undefined,
     }
   }
-  return raw
+  // 用户显式配了 industry 但没配 concept → 仍补上默认概念 (关闭概念请用 showConcept 开关)
+  return { ...raw, concept: raw.concept ?? defaultConceptItem() }
 }
 
 /** 根据显示开关过滤 extFields */
@@ -95,8 +118,26 @@ function buildExtColumnsParam(fields: ExtFieldConfig): string | undefined {
   return parts.length > 0 ? parts.join(',') : undefined
 }
 
-/** 从 stock row 中取出 ext 字段值，按配置渲染 */
-function getExtTags(stock: LimitLadderStock, item?: ExtFieldItem): string[] {
+/**
+ * 从 stock row 中取出 ext 字段值，按配置渲染。
+ *
+ * 处理顺序 (不可调换):
+ *   1. 按分隔符切分
+ *   2. `dropTag` 剔除非题材标签 (同花顺概念目录混着融资融券/深股通/地区等属性桶,
+ *      以及 "AI PC" 被分隔符拆出的 "AI"/"PC" 碎片) —— 必须在截断之前, 否则
+ *      前几个名额会被噪声占满
+ *   3. `rank` 排序 (梯内题材热度) —— 也在截断之前, 先排再取前 N
+ *   4. `maxTags` 截断 + `hiddenIndices` 过滤
+ */
+function getExtTags(
+  stock: LimitLadderStock,
+  item?: ExtFieldItem,
+  dropTag?: (tag: string) => boolean,
+  rank?: (tags: string[]) => string[],
+  /** 取**全部**标签, 忽略 maxTags 截断 —— 统计"梯内题材热度"必须用它,
+   *  否则热度只覆盖每只票的前 N 个标签, 口径失真 (2026-10-06 自查发现)。*/
+  unlimited?: boolean,
+): string[] {
   if (!item?.field) return []
   const key = item.field.replace('.', '__')
   const v = (stock as unknown as Record<string, unknown>)[key]
@@ -108,16 +149,38 @@ function getExtTags(stock: LimitLadderStock, item?: ExtFieldItem): string[] {
   if (cfg?.displayMode === 'text') return [str]
 
   const sep = cfg?.separator?.trim() || null
-  const tags = sep
+  let tags = sep
     ? str.split(sep).map(s => s.trim()).filter(Boolean)
     : str.split(/[、,，;；-]/).map(s => s.trim()).filter(Boolean)
+  if (dropTag) tags = tags.filter(t => !dropTag(t))
+  if (rank) tags = rank(tags)
 
+  if (unlimited) return tags
   const maxTags = cfg?.maxTags ?? 0
   const sliced = maxTags > 0 ? tags.slice(0, maxTags) : tags
   const hiddenIndices = maxTags > 0 ? cfg?.hiddenIndices : undefined
   return hiddenIndices?.length
     ? sliced.filter((_, i) => !hiddenIndices.includes(i))
     : sliced
+}
+
+/**
+ * 梯内题材热度 → 排序函数 (2026-10-06)。
+ *
+ * 短线视角要的是"这个梯队里哪个题材最热", 而不是同花顺的原始标签顺序
+ * (实测原始顺序常把泛题材排前面: 九阳股份 首项"绿色电力", 而其题材应是"家用电器")。
+ * 热度 = 该标签在本梯队**主状态**股票 (真涨停/真跌停, 不含炸板/断板) 中出现的次数。
+ *   - 降序排; 热度相同 (含并列 0, 即该股独享的题材) 保持原顺序 → 用索引做稳定 tiebreak
+ *   - 只影响展示次序, 不改动任何数值口径
+ */
+function makeHeatRank(heat: Map<string, number>): (tags: string[]) => string[] {
+  return tags => {
+    if (heat.size === 0) return tags
+    return tags
+      .map((tag, i) => ({ tag, i, n: heat.get(tag) ?? 0 }))
+      .sort((a, b) => (b.n - a.n) || (a.i - b.i))
+      .map(x => x.tag)
+  }
 }
 
 // ===== 方向(涨停/跌停) =====
@@ -221,7 +284,7 @@ function useSealedDegrade(asOf: string, latestDate: string | undefined, sealedRe
 
 // ===== 单只股票卡片 =====
 
-const StockCard = React.memo(function StockCard({ stock, extFields, direction, sealMode, monitored, monitorRule, onMonitorChange, hasDepth, onClick, onDimensionClick, active }: {
+const StockCard = React.memo(function StockCard({ stock, extFields, direction, sealMode, monitored, monitorRule, onMonitorChange, hasDepth, onClick, onDimensionClick, active, rankConceptTags }: {
   stock: LimitLadderStock
   extFields: ExtFieldConfig
   direction: Direction
@@ -234,6 +297,8 @@ const StockCard = React.memo(function StockCard({ stock, extFields, direction, s
   onDimensionClick: (kind: DimensionKind, value: string, sourceField?: string) => void
   /** 正在 K 线弹窗预览中 → 高亮卡片 */
   active?: boolean
+  /** 梯内题材热度排序 (2026-10-06): 按该梯队同题材涨停家数降序, 缺省则沿用原始顺序 */
+  rankConceptTags?: (tags: string[]) => string[]
 }) {
   const [showMonitorMenu, setShowMonitorMenu] = useState(false)
   const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null)
@@ -242,7 +307,8 @@ const StockCard = React.memo(function StockCard({ stock, extFields, direction, s
   const status = stock.status || (direction === 'down' ? 'limit_down' : 'limit_up')
   const style = STATUS_STYLE[status] || STATUS_STYLE[direction === 'down' ? 'limit_down' : 'limit_up']
   const isLimitHit = status === 'limit_up' || status === 'limit_down'
-  const conceptTags = getExtTags(stock, extFields.concept)
+  // 概念列过滤属性桶/碎片标签, 并按梯内题材热度重排; 行业列是单一分类, 不过滤不排序
+  const conceptTags = getExtTags(stock, extFields.concept, isThemeNoiseLabel, rankConceptTags)
   const industryTags = getExtTags(stock, extFields.industry)
   const isTextConcept = extFields.concept?.display?.displayMode === 'text'
   const isTextIndustry = extFields.industry?.display?.displayMode === 'text'
@@ -1012,18 +1078,29 @@ function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick,
   const brCount = cfg.brokenCount ? tier.stocks.filter(s => s.status === brokenStatus).length : 0
   const faCount = cfg.failedCount ? tier.stocks.filter(s => s.status === 'failed').length : 0
 
-  // 分组概念/行业统计
-  const groupConceptStats = useMemo(() => {
-    if (!extFields.showConceptGroupStats || !extFields.concept?.field) return []
+  // 梯内题材热度 (2026-10-06): 供 StockCard 排序概念标签用。
+  // 口径与 groupConceptStats 一致 —— 只统计本梯的**主状态**个股 (真涨停/真跌停),
+  // 炸板/断板不参与, 避免"炸板股的题材"把主线拉偏。与统计开关无关: 排序是默认行为。
+  const conceptHeat = useMemo(() => {
+    if (!extFields.concept?.field) return new Map<string, number>()
     const counts = new Map<string, number>()
     for (const s of tier.stocks) {
       if (s.status && s.status !== mainStatus) continue
-      for (const tag of getExtTags(s, extFields.concept)) {
+      // unlimited: 统计必须用全部标签, 不能受 maxTags 截断影响
+      for (const tag of getExtTags(s, extFields.concept, isThemeNoiseLabel, undefined, true)) {
         counts.set(tag, (counts.get(tag) || 0) + 1)
       }
     }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1])
-  }, [tier.stocks, extFields, mainStatus])
+    return counts
+  }, [tier.stocks, extFields.concept, mainStatus])
+
+  const rankConceptTags = useMemo(() => makeHeatRank(conceptHeat), [conceptHeat])
+
+  // 分组概念/行业统计
+  const groupConceptStats = useMemo(() => {
+    if (!extFields.showConceptGroupStats || !extFields.concept?.field) return []
+    return [...conceptHeat.entries()].sort((a, b) => b[1] - a[1])
+  }, [conceptHeat, extFields.showConceptGroupStats, extFields.concept?.field])
 
   const groupIndustryStats = useMemo(() => {
     if (!extFields.showIndustryGroupStats || !extFields.industry?.field) return []
@@ -1154,6 +1231,7 @@ function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick,
                   onClick={onStockClick}
                   onDimensionClick={onDimensionClick}
                   active={activeSymbol === s.symbol}
+                  rankConceptTags={rankConceptTags}
                 />
               ))}
             </div>

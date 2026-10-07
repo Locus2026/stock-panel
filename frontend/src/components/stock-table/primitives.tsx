@@ -48,10 +48,11 @@ export function renderBuiltinDataCell(r: any, col: ColumnConfig): ReactNode | nu
   if (col.source.type !== 'builtin') return null
   const key = col.source.key
 
-  // 这些列需要业务上下文，不在此处理
-  if (key === 'symbol' || key === 'strategies' || key === 'score' || key === 'signals' || key === 'candle') {
+// 这些列需要业务上下文，不在此处理
+if (key === 'symbol' || key === 'strategies' || key === 'score' || key === 'signals' || key === 'candle'
+    || key === 'role_tag' || key === 'top_concept') {
     return null
-  }
+}
 
   const numCls = `${alignTdClass(col.align)} ${NUM_CELL_CLASS}`
 
@@ -83,6 +84,18 @@ export function renderBuiltinDataCell(r: any, col: ColumnConfig): ReactNode | nu
       return <td key={col.id} className={`${numCls} text-secondary`}>{fmtBigNum(r.amount)}</td>
     case 'float_val':
       return <td key={col.id} className={`${numCls} text-secondary`}>{r.float_shares && r.close ? fmtBigNum(r.float_shares * r.close) : '—'}</td>
+    // 流通市值(元): 后端按 close × volume × 10000 / turnover_rate 现算(恒等式已校验)
+    case 'float_mv':
+      return <td key={col.id} className={`${numCls} text-secondary`}>{r.float_mv != null ? fmtBigNum(r.float_mv) : '—'}</td>
+    // 竞价涨幅(%): A股红涨绿跌; 09:25 前/非交易日为 null → "—"
+    case 'auction_pct':
+      return (
+        <td key={col.id} className={numCls}>
+          <span className={r.auction_pct != null ? priceColorClass(r.auction_pct / 100) : ''}>
+            {r.auction_pct != null ? `${r.auction_pct >= 0 ? '+' : ''}${Number(r.auction_pct).toFixed(2)}%` : '—'}
+          </span>
+        </td>
+      )
     case 'vol_ratio':
       return (
         <td key={col.id} className={numCls}>

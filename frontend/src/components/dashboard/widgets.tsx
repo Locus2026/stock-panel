@@ -300,11 +300,13 @@ export function RankColumn({ title, rows, tone, onStockClick, onDimensionClick, 
               {r.leader?.symbol ? (
                 <button
                   onClick={(e) => { e.stopPropagation(); onStockClick?.(r.leader!.symbol!, r.leader!.name ?? undefined) }}
-                  className="truncate text-[10px] font-medium text-secondary hover:text-accent cursor-pointer transition-colors"
-                  title={r.leader?.symbol ?? undefined}
+                  /* 领涨股名完整显示 (2026-10-06 用户要求): 原来 truncate 把"康希诺"
+                     截成"康…"。改为不截断、超长时换行, title 给出 代码+名称。 */
+                  className="text-[10px] font-medium text-secondary hover:text-accent cursor-pointer transition-colors text-left break-all leading-tight"
+                  title={`${r.leader?.name ?? ''} ${r.leader?.symbol ?? ''}`.trim()}
                 >{r.leader?.name ?? '—'}</button>
               ) : (
-                <span className="truncate text-[10px] text-muted">{r.leader?.name ?? '—'}</span>
+                <span className="text-[10px] text-muted break-all leading-tight">{r.leader?.name ?? '—'}</span>
               )}
               {r.leader?.change_pct != null && (
                 <span className={`shrink-0 font-mono text-[9px] tabular-nums ${pctClass(r.leader.change_pct)}`}>

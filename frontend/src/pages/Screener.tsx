@@ -41,6 +41,19 @@ import {
 // 获取策略为占位功能, 暂时隐藏入口; 恢复时改回 true
 const SHOW_STRATEGY_STORE = false
 
+/**
+ * 策略列表的**唯一** React Query key。
+ *
+ * 主查询与"创建/叠加策略保存后重拉"必须共用同一个 key 对象, 否则 fetchQuery
+ * 会写到另一个缓存条目, 主查询仍持有旧列表 —— 后果是新建策略被
+ * `visiblePool = pool ∩ availableStrategyIds` 过滤掉(卡片不显示), 随后又被
+ * `prune()` 当作失效策略永久移出策略池, 刷新页面也回不来。
+ *
+ * 2026-10-06 实测: 用户创建的 `composite_muwbzsdb`(涨停基因活跃股+平台整理突破)
+ * 在后端 /api/strategies 里正常返回, 但页面上没有卡片, 根因即此处两处 key 差一层。
+ */
+const STRATEGY_LIST_KEY = [...QK.screenerStrategies('all'), 'all'] as const
+
 export function Screener() {
   const [assetType, setAssetType] = useState<'stock' | 'etf'>('stock')
   // 周期显示筛选: 全部 / 日线 / 分钟 — 只过滤卡片显示, 不影响池和执行;
@@ -65,7 +78,9 @@ export function Screener() {
   const [showStore, setShowStore] = useState(false)
   const [showDefaultParams, setShowDefaultParams] = useState(false)
   const [showComposite, setShowComposite] = useState(false)
-  const { pool, addToPool, removeFromPool, reorderPool, prune } = useStrategyPool()
+  const { pool, addToPool, removeFromPool, reorderPool, prune, clearProtected } = useStrategyPool()
+  // 新建保护期仅限当前会话: 挂载时清空, 让上一次会话遗留的失效策略照常被清理
+  useEffect(() => { clearProtected() }, [clearProtected])
   const [cardSize, setCardSize] = useState<CardSize>(loadCardSize)
   // 日k蜡烛图显示开关（仅当 candle 列可见时才有意义；持久化）
   const [dailyKChartVisible, setDailyKChartVisible] = useState<boolean>(() => storage.screenerCandle.get(true))
@@ -153,8 +168,15 @@ export function Screener() {
   const screenerAutoRun = prefs?.screener_auto_run ?? true
 
   // 统一列表: 不按周期过滤, 日线+分钟策略合并返回, 分钟策略带 timeframes 标识
+  //
+  // key 必须是**唯一常量**: 创建策略/叠加策略保存后要用同一个 key 重新拉取,
+  // 才能把新策略写进主查询缓存。若这里用 [...QK.screenerStrategies('all'), 'all']
+  // 而保存回调里用 QK.screenerStrategies('all'), 两者相差一层 'all' →
+  // fetchQuery 写到另一个缓存条目, 主查询看不到新策略 →
+  //   visiblePool (pool ∩ availableStrategyIds) 过滤掉它 → 卡片不显示,
+  //   且随后 prune() 会把它当"已失效"从池里删除, 刷新页面也回不来。
   const strategies = useQuery({
-    queryKey: [...QK.screenerStrategies('all'), 'all'],
+    queryKey: STRATEGY_LIST_KEY,
     queryFn: () => api.screenerStrategies(undefined, 'all'),
   })
 
@@ -747,14 +769,14 @@ export function Screener() {
         title="策略"
         subtitle="基于本地 enriched 表 · 毫秒级 SQL"
         right={
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
             {/* 资产类型切换: 股票 / ETF (分钟策略 asset_types 仅股票, ETF 列表自然不含) */}
-            <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden">
+            <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden shrink-0">
               {(['stock', 'etf'] as const).map(t => (
                 <button
                   key={t}
                   onClick={() => { setAssetType(t); setActiveStrategy(null); setResult(null); setShowAll(false) }}
-                  className={`h-full px-2.5 text-xs font-medium transition-colors
+                  className={`h-full px-2.5 text-xs font-medium transition-colors whitespace-nowrap
                     cursor-pointer ${assetType === t
                       ? 'bg-accent/10 text-accent'
                       : 'text-muted hover:text-secondary hover:bg-elevated'
@@ -765,7 +787,7 @@ export function Screener() {
               ))}
             </div>
             {/* 周期筛选: 全部 / 日线 / 分钟 — 只过滤卡片显示, 不影响池与执行路由 */}
-            <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden">
+            <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden shrink-0">
               {(['all', '1d', '1m'] as const).map(tf => (
                 <button
                   key={tf}
@@ -774,7 +796,7 @@ export function Screener() {
                     setTfFilter(tf)
                     setActiveStrategy(null); setResult(null); setShowAll(false)
                   }}
-                  className={`h-full px-2.5 text-xs font-medium transition-colors cursor-pointer
+                  className={`h-full px-2.5 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap
                     ${tfFilter === tf
                       ? 'bg-accent/10 text-accent'
                       : 'text-muted hover:text-secondary hover:bg-elevated'
@@ -789,12 +811,12 @@ export function Screener() {
               onClick={() => reloadStrategies.mutate()}
               disabled={reloadStrategies.isPending}
               title="重新加载策略并运行全部策略，刷新当前符合条件的个股"
-              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-btn
+              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-btn shrink-0 whitespace-nowrap
                 border border-border bg-surface text-xs font-medium text-muted
                 hover:text-accent hover:border-accent/50 transition-colors cursor-pointer
                 disabled:opacity-50 disabled:cursor-wait"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${reloadStrategies.isPending ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`h-3.5 w-3.5 shrink-0 ${reloadStrategies.isPending ? 'animate-spin' : ''}`} />
               重载
             </button>
             {asOf && (
@@ -809,7 +831,7 @@ export function Screener() {
             <button
               onClick={() => setShowAll(v => { if (!v) setActiveStrategy(null); return !v })}
               title="显示全部策略个股"
-              className={`inline-flex items-center justify-center h-7 w-7 rounded-btn border transition-colors cursor-pointer
+              className={`inline-flex items-center justify-center h-7 w-7 rounded-btn border transition-colors cursor-pointer shrink-0
                 ${showAll
                   ? 'border-accent/50 bg-accent/10 text-accent'
                   : 'border-border bg-surface text-muted hover:text-secondary hover:border-accent/40'
@@ -818,12 +840,12 @@ export function Screener() {
               <Network className="h-3.5 w-3.5" />
             </button>
             {/* 卡片尺寸切换 */}
-            <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden">
+            <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden shrink-0">
               {(['hidden', 'mini', 'normal', 'large'] as const).map(sz => (
                 <button
                   key={sz}
                   onClick={() => { setCardSize(sz); storage.screenerCardSize.set(sz) }}
-                  className={`h-full px-2 text-[10px] font-medium transition-colors cursor-pointer
+                  className={`h-full px-2 text-[10px] font-medium transition-colors cursor-pointer whitespace-nowrap
                     ${cardSize === sz
                       ? 'bg-accent/10 text-accent'
                       : 'text-muted hover:text-secondary hover:bg-elevated'
@@ -836,11 +858,11 @@ export function Screener() {
             {/* 策略池按钮 */}
             <button
               onClick={() => setShowPoolDialog(true)}
-              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn
+              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn shrink-0 whitespace-nowrap
                 border border-border bg-surface text-xs font-medium text-secondary
                 hover:text-accent hover:border-accent/50 transition-colors cursor-pointer"
             >
-              <Layers className="h-3.5 w-3.5" />
+              <Layers className="h-3.5 w-3.5 shrink-0" />
               策略池
               <span className="ml-0.5 min-w-[28px] h-4 flex items-center justify-center rounded-full bg-accent/15 text-accent text-[10px] font-bold">
                 {visiblePool.length}/{strategyPresets.length}
@@ -849,11 +871,11 @@ export function Screener() {
             {/* 创建叠加策略 */}
             <button
               onClick={() => setShowComposite(true)}
-              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn
+              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn shrink-0 whitespace-nowrap
                 text-xs font-medium text-teal-400 border border-teal-500/20 bg-teal-500/5
                 hover:bg-teal-500/15 transition-colors cursor-pointer"
             >
-              <Layers className="h-3.5 w-3.5" />
+              <Layers className="h-3.5 w-3.5 shrink-0" />
               叠加策略
             </button>
             {/* 创建策略 */}
@@ -870,11 +892,11 @@ export function Screener() {
             {SHOW_STRATEGY_STORE && (
               <button
                 onClick={() => setShowStore(true)}
-                className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn
+                className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn shrink-0 whitespace-nowrap
                   border border-border bg-surface text-xs font-medium text-secondary
                   hover:text-accent hover:border-accent/50 transition-colors cursor-pointer"
               >
-                <Store className="h-3.5 w-3.5" />
+                <Store className="h-3.5 w-3.5 shrink-0" />
                 获取策略
               </button>
             )}
@@ -882,11 +904,11 @@ export function Screener() {
             <button
               onClick={() => setShowDefaultParams(true)}
               title="默认基础参数 — 新建策略默认使用的基础过滤配置"
-              className="inline-flex items-center justify-center h-7 w-7 rounded-btn
+              className="inline-flex items-center justify-center h-7 w-7 rounded-btn shrink-0
                 border border-border bg-surface text-muted
                 hover:text-accent hover:border-accent/50 transition-colors cursor-pointer"
             >
-              <SlidersHorizontal className="h-3.5 w-3.5" />
+              <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
             </button>
           </div>
         }
@@ -1226,7 +1248,7 @@ export function Screener() {
             toast('AI 策略已保存为草稿，请在策略池「AI」标签发布后使用', 'success')
             return
           }
-          const data = await qc.fetchQuery({ queryKey: QK.screenerStrategies('all'), queryFn: () => api.screenerStrategies(), staleTime: 0 })
+          const data = await qc.fetchQuery({ queryKey: STRATEGY_LIST_KEY, queryFn: () => api.screenerStrategies(), staleTime: 0 })
           if (!data.presets.some(s => s.id === id)) {
             throw new Error(`策略 ${id} 已保存但未加载，请检查策略代码`)
           }
@@ -1243,7 +1265,13 @@ export function Screener() {
         open={showComposite}
         onClose={() => setShowComposite(false)}
         onSavedId={async id => {
-          const data = await qc.fetchQuery({ queryKey: QK.screenerStrategies('all'), queryFn: () => api.screenerStrategies(), staleTime: 0 })
+          const data = await qc.fetchQuery({ queryKey: STRATEGY_LIST_KEY, queryFn: () => api.screenerStrategies(), staleTime: 0 })
+          // 同一道校验: 后端没加载出来时**不要** addToPool —— 否则 id 只在池里、
+          // 不在策略列表, visiblePool 会过滤掉它, 接着 prune() 还会把它当失效项删除
+          if (!data.presets.some(s => s.id === id)) {
+            toast(`叠加策略 ${id} 已保存但未加载，请检查子策略引用`, 'error')
+            return
+          }
           addToPool(id)
           // 新建叠加策略为日线时立即扫描, 免去手动点刷新 (分钟策略仍手动单跑)
           const preset = data.presets.find(s => s.id === id)

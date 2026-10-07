@@ -26,7 +26,6 @@ import {
 import { api, type ProviderField } from '@/lib/api'
 import { usePreferences, useSettings } from '@/lib/useSharedQueries'
 import { QK } from '@/lib/queryKeys'
-import { Logo } from '@/components/Logo'
 
 // ===== 引导页:5 步向导 =====
 // 0. 声明  1. 欢迎  2. 数据源与 Key  3. 能力路由检测  4. 完成 → 写标记 → 进面板
@@ -96,15 +95,10 @@ export function Onboarding() {
         />
       </div>
 
-      {/* 顶栏:logo + 进度指示 */}
+      {/* 顶栏:品牌标识 + 进度指示 */}
       <header className="relative z-10 flex items-center justify-between px-6 py-4 border-b border-border">
         <div className="flex items-center gap-2.5 text-foreground">
-          <Logo
-            size={24}
-            className="shrink-0"
-            style={{ color: BRAND, filter: `drop-shadow(0 0 8px ${BRAND}55)` }}
-          />
-          <span className="text-sm font-semibold tracking-tight">Tick Stock Panel</span>
+          <span className="text-sm font-semibold tracking-[0.14em]">STOCK</span>
         </div>
         {/* 步骤进度条 —— 胶囊式 */}
         <div className="flex items-center gap-1.5">

@@ -4,7 +4,6 @@ import { Layout } from './components/Layout'
 import { Onboarding } from './pages/Onboarding'
 import { Auth } from './pages/Auth'
 import { useSettings } from './lib/useSharedQueries'
-import { Logo } from './components/Logo'
 import { ExtensionBoundary } from './extensions/ExtensionBoundary'
 import {
   finalizeFrontendExtensions,
@@ -97,7 +96,7 @@ function OnboardingGuard({ children }: { children: React.ReactNode }) {
     return (
       <div className="min-h-screen bg-base grid place-items-center">
         <div className="flex flex-col items-center gap-3 text-muted">
-          <Logo size={28} className="text-foreground" />
+          <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-foreground">STOCK</div>
           <div className="text-xs">加载中…</div>
         </div>
       </div>

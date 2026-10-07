@@ -59,6 +59,21 @@ const TREND_COLORS = [
   '#9575cd', '#81c784', '#ffd54f', '#4fc3f7',
 ]
 
+/**
+ * 走势线统一取色 (2026-10-05 修复色错位)。
+ *
+ * 坑: 只设 lineStyle.color 时, echarts 的 itemStyle.color 仍为 undefined →
+ * tooltip 的 marker / legend 色标回落到**内置默认调色板** (#5470c6, #91cc75, ...,
+ * 按 seriesIndex 取), 与线的 TREND_COLORS 完全不是一套 → 图上线条颜色与 tooltip/
+ * legend/榜单圆点对不上 (实测: 白酒线为 TREND_COLORS[1] 橙, tooltip 圆点却是
+ * 默认调色板[0] 蓝 #5470c6)。
+ *
+ * 修法: series 同时显式给 itemStyle.color, 并让线、末端标签、marker、榜单圆点
+ * 全部走这一个函数, 单一色源。
+ */
+const trendColor = (i: number): string =>
+  TREND_COLORS[((i % TREND_COLORS.length) + TREND_COLORS.length) % TREND_COLORS.length]
+
 interface HeatEventParams {
   seriesType?: string
   seriesName?: string
@@ -171,6 +186,27 @@ const NO_DATA_HINTS: Record<string, string> = {
   minute_empty: '当日分钟数据为空',
   members_missing: '板块成分数据缺失 — 请先在数据页获取概念/行业分类扩展数据',
   no_member_bars: '当日分钟数据中没有板块成分股的行情',
+}
+
+/**
+ * 板块涨幅的样本覆盖提示。
+ *
+ * ⚠️ 该"行业涨幅"是**成分股等权均值**, 只统计**当日有分钟K 的成分股**。
+ * 实测 2026-10-05: 本地全市场分钟K 仅 4 只, 而概念成员表有 140662 行 / 388 个概念,
+ * 导致「文化传媒」394 只成分里只有 1 只有分钟K —— 表里那个 +9.99% 其实是
+ * **新华传媒 600825 一只股票的涨幅**(实测 +9.9894%), 不是行业整体。
+ * 故凡 命中数 < 成分总数 时必须披露, 否则用户会把个股涨幅误读成行业涨幅。
+ */
+function sectorCoverageTip(s: { name: string; n_members: number; n_members_with_bars: number }): string {
+  const bar = s.n_members_with_bars
+  const total = s.n_members
+  if (bar <= 0) return `${s.name}\n当日分钟数据中无成分股行情, 涨幅不可用`
+  if (bar >= total) return `${s.name}\n${bar}/${total} 只成分股参与计算 (等权均值)`
+  return [
+    `${s.name}`,
+    `⚠️ 仅 ${bar}/${total} 只成分股有当日分钟数据`,
+    `该涨幅是这 ${bar} 只的等权均值, 不足以代表行业整体`,
+  ].join('\n')
 }
 
 export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
@@ -383,7 +419,10 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
         smooth: true,
         symbol: 'none',
         data: (heatSeries.matrix[i] ?? []).slice(startCol),
-        lineStyle: { color: TREND_COLORS[i % TREND_COLORS.length], width: 1.4 },
+        // 线与 marker/legend 必须同色: itemStyle.color 不设时 echarts 会用内置
+        // 默认调色板, 导致 tooltip/legend 色标与线条对不上 (见 trendColor 注释)
+        itemStyle: { color: trendColor(i) },
+        lineStyle: { color: trendColor(i), width: 1.4 },
         connectNulls: true,
         // 悬停聚焦 (图上线条或榜单行均可触发): 目标线加粗并在末端浮出板块名,
         // 其余线压到近透明 — 多线并行时不用再靠颜色逐一匹配
@@ -392,7 +431,7 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
           lineStyle: { width: 2.6 },
           label: {
             show: true, formatter: () => name, position: 'top' as const,
-            fontSize: 9, color: TREND_COLORS[i % TREND_COLORS.length],
+            fontSize: 9, color: trendColor(i),
             textBorderColor: chartTheme.tooltipBg, textBorderWidth: 2,
           },
         },
@@ -1014,13 +1053,24 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
                         className="mr-1 inline-block h-1.5 w-1.5 rounded-full align-middle"
                         style={{
                           backgroundColor: displayNames.includes(sector.name)
-                            ? TREND_COLORS[displayNames.indexOf(sector.name) % TREND_COLORS.length]
+                            ? trendColor(displayNames.indexOf(sector.name))
                             : 'transparent',
                         }}
                       />
                       {sector.name}
                     </span>
-                    <span className={`text-right font-mono ${pctClass(sector.pct_now)}`}>{fmtPct(sector.pct_now)}</span>
+                    <span
+                      className={`text-right font-mono ${pctClass(sector.pct_now)}`}
+                      title={sectorCoverageTip(sector)}
+                    >
+                      {fmtPct(sector.pct_now)}
+                      {/* 样本覆盖不足时显式披露: 该"行业涨幅"实为 1~N 只个股均值, 不能当行业整体看 */}
+                      {sector.n_members_with_bars > 0 && sector.n_members_with_bars < sector.n_members && (
+                        <span className="ml-0.5 text-[9px] text-amber-500/80" aria-label="样本覆盖不足">
+                          ({sector.n_members_with_bars})
+                        </span>
+                      )}
+                    </span>
                     <span className={`text-right font-mono ${pctClass(sector.pct_prev)}`}>{fmtPct(sector.pct_prev)}</span>
                     <span className={`text-right font-mono ${sector.rank_change == null ? 'text-muted' : sector.rank_change > 0 ? 'text-bull' : sector.rank_change < 0 ? 'text-bear' : 'text-muted'}`}>
                       {sector.rank_change == null ? '—' : sector.rank_change > 0 ? `↑${sector.rank_change}` : sector.rank_change < 0 ? `↓${-sector.rank_change}` : '—'}

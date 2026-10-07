@@ -40,6 +40,7 @@ import { useTableSort } from '@/components/stock-table/useTableSort'
 import { MiniCandlestick } from '@/components/stock-table/MiniCandlestick'
 import { MiniIntraday } from '@/components/stock-table/MiniIntraday'
 import { boardTag, renderBuiltinDataCell } from '@/components/stock-table/primitives'
+import { RoleTagCell, useRoleMarks } from '@/components/stock-table/RoleTagCell'
 import { getSignals, signalCls, getSortValue, getIntradaySortValue, UNSORTABLE_KEYS } from '@/lib/stock-table'
 import { resolveCandleConfig, resolveIntradayConfig } from '@/lib/list-columns'
 import { useQuoteStatus, useCapabilities, usePreferences } from '@/lib/useSharedQueries'
@@ -807,6 +808,9 @@ export function Watchlist() {
     }
   }, [groupList.isSuccess, groups, selectedGroup])
 
+  // 个股角色标注快照 (龙头/中军/跟风/补涨/核心), 供「角色」列渲染
+  const roleMarks = useRoleMarks()
+
   // enriched 数据 — 传入 ext_columns 参数
   const enriched = useQuery({
     queryKey: QK.watchlistEnriched(extColumnsParam),
@@ -816,6 +820,21 @@ export function Watchlist() {
 
   const symbols = enriched.data?.rows?.map((r: any) => r.symbol) ?? []
   const symbolsKey = symbols.join(',')
+
+  // 盘中增强(竞价涨幅 / 概念板块) —— 依赖 fqgate 上游, 独立请求:
+  // 上游抖动不应阻塞列表主体渲染(那是 enriched 的职责), 故失败仅 warnings 提示。
+  // 仅当用户真的显示了这两列时才请求, 避免无谓的外部 IO。
+  const needAuction = columns.some(c => c.visible && c.source.type === 'builtin' && c.source.key === 'auction_pct')
+  const needConcept = columns.some(c => c.visible && c.source.type === 'builtin' && c.source.key === 'top_concept')
+  const intradayEnrich = useQuery({
+    queryKey: ['watchlistIntradayEnrichment', symbolsKey, needAuction, needConcept],
+    queryFn: () => api.watchlistIntradayEnrichment(),
+    enabled: (list.data?.symbols.length ?? 0) > 0 && (needAuction || needConcept),
+    // 竞价 09:15-09:30 逐帧变化, 盘中 60s 刷一次; 非交易时段自动降频由后端缓存兜底
+    refetchInterval: 60_000,
+    staleTime: 45_000,
+    retry: 1,
+  })
 
   // 指数无本地分钟K数据, 分时批量请求剔除指数 symbol (省请求, 避免逐只 404)
   const minuteSymbols = useMemo(
@@ -1060,7 +1079,20 @@ export function Watchlist() {
 
   const listEntries = list.data?.symbols ?? []
   const allSymbols = listEntries.map(s => s.symbol)
-  const rows = enriched.data?.rows ?? []
+  // 把盘中增强(竞价涨幅 / 概念板块)合并进行。
+  // 两列都来自独立的 fqgate 端点(可能为空), 缺失时保持 undefined → 渲染 "—"。
+  const rows = useMemo(() => {
+    const base = enriched.data?.rows ?? []
+    const auction = intradayEnrich.data?.auction_pct
+    const concepts = intradayEnrich.data?.concepts
+    if (!auction && !concepts) return base
+    return base.map((r: any) => {
+      const a = auction?.[r.symbol]
+      const c = concepts?.[r.symbol]
+      if (a == null && !c) return r
+      return { ...r, auction_pct: a ?? r.auction_pct, top_concept: c ?? r.top_concept }
+    })
+  }, [enriched.data, intradayEnrich.data])
   const groupBySymbol = useMemo(
     () => new Map(listEntries.map(entry => [entry.symbol, entry.group_ids ?? []])),
     [listEntries],
@@ -1830,6 +1862,37 @@ export function Watchlist() {
                 }
                 if (key === 'turnover') {
                   return <td className={`${numCls} ${turnoverColor(r.turnover_rate)}`}>{r.turnover_rate != null ? `${r.turnover_rate.toFixed(2)}%` : '—'}</td>
+                }
+                // 最相关概念板块: r.top_concept = [[名称, 成分股数], ...] 升序(最精准在前)
+                if (key === 'top_concept') {
+                  const list = (r.top_concept ?? []) as [string, number][]
+                  if (!Array.isArray(list) || list.length === 0) {
+                    return <td className={numCls}><span className="text-muted">—</span></td>
+                  }
+                  const shown = list.slice(0, 2)
+                  const rest = list.length - shown.length
+                  return (
+                    <td className={numCls} title={list.map(([n, s]) => `${n} (${s}只)`).join('\n')}>
+                      <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                        {shown.map(([n], i) => (
+                          <span key={n} className={`px-1 py-px rounded text-[10px] leading-tight border ${
+                            i === 0
+                              ? 'text-accent bg-accent/10 border-accent/25'
+                              : 'text-secondary bg-elevated border-border'
+                          }`}>{n}</span>
+                        ))}
+                        {rest > 0 && <span className="text-[10px] text-muted">+{rest}</span>}
+                      </span>
+                    </td>
+                  )
+                }
+                // 个股角色标注(龙头/中军/跟风/补涨/核心) — 纯手工标记, 落 localStorage
+                if (key === 'role_tag') {
+                  return (
+                    <td className={numCls}>
+                      <RoleTagCell symbol={r.symbol} marks={roleMarks} />
+                    </td>
+                  )
                 }
                 // 信号列
                 if (key === 'signals') {

@@ -682,6 +682,17 @@ function FeeSettingsModal({ accId, fees, queue, onSaved, onClose }: {
 // ================================================================
 const COMPARE_COLORS = ['#3B82F6', '#F59E0B', '#10B981', '#EF4444', '#8B5CF6', '#06B6D4', '#EC4899', '#84CC16']
 
+/**
+ * 账户对比线统一取色 (2026-10-05)。
+ *
+ * 与 SectorRotationCard 的 trendColor 同一个坑: 只设 lineStyle.color 时,
+ * itemStyle.color 仍为 undefined → legend 色标与 tooltip 的 marker 回落到
+ * echarts 内置默认调色板 (#5470c6, #91cc75, ...), 与折线色错位。
+ * 单一色源 + 显式 itemStyle = 线/图例/悬浮标记三处一致。
+ */
+const compareColor = (i: number): string =>
+  COMPARE_COLORS[((i % COMPARE_COLORS.length) + COMPARE_COLORS.length) % COMPARE_COLORS.length]
+
 function CompareChart({ rows }: { rows: PaperCompareRow[] }) {
   const elRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<echarts.ECharts | null>(null)
@@ -739,7 +750,10 @@ function CompareChart({ rows }: { rows: PaperCompareRow[] }) {
         showSymbol: false,
         // 归一化: 定版净值 / 首日净值 (不同本金也能公平对比)
         data: r.nav.map(n => [n.date, Number((n.nav / (r.nav[0]?.nav || 1)).toFixed(4))]),
-        lineStyle: { color: COMPARE_COLORS[i % COMPARE_COLORS.length], width: 2 },
+        // itemStyle 与 lineStyle 必须同色: 缺 itemStyle 时 legend/tooltip 色标
+        // 会走 echarts 默认调色板, 与折线对不上 (见 compareColor 注释)
+        itemStyle: { color: compareColor(i) },
+        lineStyle: { color: compareColor(i), width: 2 },
       })),
     })
   }, [rows])

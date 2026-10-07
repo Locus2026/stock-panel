@@ -260,8 +260,15 @@ export function minSizeOf(t: WidgetType): { w: number; h: number } {
   return { w: d?.minW ?? 2, h: d?.minH ?? 4 }
 }
 
-/** 默认布局 — 用户定稿 v2(2026-09-27): 顶部通栏 → 中段四列等高(分布/雷达/趋势/梯队 各8行) → 双热度+右侧监控高栏 → 四榜单。
- * 坐标必须是竖直压实后的稳定形态(列内不留空隙), 否则 RGL 渲染时会自动上提,
+/** 默认布局 v3(2026-10-06 用户调整): 顶部通栏 → 中段四列等高(分布/雷达/趋势/梯队 各8行)
+ * → 双热度 + 监控中心**同高**(概念热度 5 宽 / 行业 4 宽 / 监控 3×10) → 四榜单各 3 宽 12 行。
+ *
+ * v2→v3 变化(用户诉求: ①监控中心区域太大 ②概念/行业热度的领涨个股名被截断):
+ *   - monitor 由 4×22 缩到 3×10 (面积 88 → 30, -66%), 与两个热度卡同高;
+ *     原来它独占右侧一整列通到 21 行, 而内容常为空("暂无触发记录"), 白占版面。
+ *   - concept-rank 加宽 4→5、industry-rank 4 (宽度让给名字完整显示);
+ *   - 腾出的底部空间给四个榜单: 2×13 → 3×12 (面积 26 → 36, 榜单也更可读)。
+ * 坐标必须竖直压实、列内不留空隙, 否则 RGL 渲染会自动上提,
  * 导致「恢复默认」的 JSON 等值判断永不成立、每次都落 blob 而非 null。 */
 export const DEFAULT_LAYOUT: DashboardItem[] = [
   { i: 'indices', t: 'indices', x: 0, y: 0, w: 12, h: 2 },
@@ -270,11 +277,11 @@ export const DEFAULT_LAYOUT: DashboardItem[] = [
   { i: 'radar', t: 'radar', x: 3, y: 4, w: 3, h: 8 },
   { i: 'trend', t: 'trend', x: 6, y: 4, w: 3, h: 8 },
   { i: 'ladder', t: 'ladder', x: 9, y: 4, w: 3, h: 8 },
-  { i: 'concept-rank', t: 'concept-rank', x: 0, y: 12, w: 4, h: 9 },
-  { i: 'industry-rank', t: 'industry-rank', x: 4, y: 12, w: 4, h: 9 },
-  { i: 'monitor', t: 'monitor', x: 8, y: 12, w: 4, h: 22 },
-  { i: 'gainers', t: 'gainers', x: 0, y: 21, w: 2, h: 13 },
-  { i: 'losers', t: 'losers', x: 2, y: 21, w: 2, h: 13 },
-  { i: 'turnover', t: 'turnover', x: 4, y: 21, w: 2, h: 13 },
-  { i: 'activity', t: 'activity', x: 6, y: 21, w: 2, h: 13 },
+  { i: 'concept-rank', t: 'concept-rank', x: 0, y: 12, w: 5, h: 10 },
+  { i: 'industry-rank', t: 'industry-rank', x: 5, y: 12, w: 4, h: 10 },
+  { i: 'monitor', t: 'monitor', x: 9, y: 12, w: 3, h: 10 },
+  { i: 'gainers', t: 'gainers', x: 0, y: 22, w: 3, h: 12 },
+  { i: 'losers', t: 'losers', x: 3, y: 22, w: 3, h: 12 },
+  { i: 'turnover', t: 'turnover', x: 6, y: 22, w: 3, h: 12 },
+  { i: 'activity', t: 'activity', x: 9, y: 22, w: 3, h: 12 },
 ]

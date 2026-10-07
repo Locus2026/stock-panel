@@ -41,6 +41,12 @@ export function friendlyStreamError(message: string | undefined | null): string 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 /** 同步计算型接口 (回测/筛选等) 的放宽超时: 合法耗时可能远超轮询类接口。 */
 const COMPUTE_REQUEST_TIMEOUT_MS = 300_000
+/** 自动挖掘 L1 筛选: 在单个请求内同步跑注册表**全部 77 个因子**的批量回测
+ *  (后端 screen_all_factors → FactorBacktestService.run_batch)。
+ *  实测 2026-10-04 全市场 241 交易日耗时 **43s**(L1 窗口固定 SCREEN_WINDOW_DAYS=365天,
+ *  与 budget_profile 解耦, 故三档耗时相近) → 默认 30s 必然超时。
+ *  留 3 倍余量应对标的数增长; 真正的样本外验证在 worker 里异步跑, 不受此限制。 */
+const MINING_SCREEN_TIMEOUT_MS = 180_000
 /** 扩展数据拉取类长请求: 跟随后端配置的单次超时 (timeoutSeconds, 默认 30s) + 10s 解析/写盘缓冲。
  *  浏览器端 fetch 默认 30s abort 会先于后端超时触发, 大响应接口 (如全量集合竞价
  *  /day, 后端超时 120s) 必须把这层同步放宽。 */
@@ -2805,6 +2811,17 @@ export const api = {
         : '/api/watchlist/enriched',
     ),
 
+  /** 盘中增强(竞价涨幅/概念板块) —— 依赖 fqgate 上游, 与 enriched 分离以免阻塞列表渲染。 */
+  watchlistIntradayEnrichment: (tradeDate?: string) =>
+    request<{
+      auction_pct: Record<string, number>
+      concepts: Record<string, [string, number][]>
+      warnings: string[]
+    }>(
+      `/api/watchlist/intraday-enrichment${tradeDate ? `?trade_date=${tradeDate}` : ''}`,
+      { timeoutMs: 30_000 },
+    ),
+
   // timeframe='all' 时不传参数 → 后端不过滤周期, 返回日线+分钟合并列表
   screenerStrategies: async (assetType?: 'stock' | 'etf' | 'index', timeframe: '1d' | '1m' | 'all' = '1d') => {
     const data = await request<{ strategies: StrategyDetail[]; load_errors?: StrategyLoadError[] }>(
@@ -3063,6 +3080,7 @@ export const api = {
   miningAutoStart: (payload: MiningAutoStartPayload) =>
     request<MiningAutoStartResponse>('/api/backtest/mining/auto', {
       method: 'POST',
+      timeoutMs: MINING_SCREEN_TIMEOUT_MS,
       body: JSON.stringify(payload),
     }),
 

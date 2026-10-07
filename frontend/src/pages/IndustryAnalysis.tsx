@@ -24,6 +24,7 @@ import { storage } from '@/lib/storage'
 import { fmtBigNum, fmtPct, priceColorClass } from '@/lib/format'
 import { cn } from '@/lib/cn'
 import { resolveDimension, type DimensionGroup, type StockRow } from '@/lib/analysis-adapter'
+import { buildLabelIndex, refineConceptGroups } from '@/lib/concept-themes'
 import { SectorRotationCard } from '@/components/SectorRotationCard'
 
 const KEYWORDS = ['industry', '行业', 'sector', '申万', '中信']
@@ -327,9 +328,18 @@ export function IndustryAnalysis() {
     () => resolveDimension(rowsQuery.data, activeConfig, fieldConfig.dimensionField ? [fieldConfig.dimensionField, ...CANDIDATE_FIELDS] : CANDIDATE_FIELDS),
     [rowsQuery.data, activeConfig, fieldConfig.dimensionField],
   )
+  // 维度为概念字段时: 剔除交易/持股/地区等属性桶, 同产业链标签合并为主线族
+  // (行业字段不受影响; 概念无层级, 在 groupByIndustryLevel 之前做)
+  // labelIndex 供「人工智能」宽泛桶按个股标签动态分流 (算力硬件 vs 应用软件)
+  const conceptRows = rowsQuery.data?.rows as Record<string, unknown>[] | undefined
+  const baseGroups = useMemo(() => {
+    if (!resolved.ok || !/概念|concept/i.test(resolved.dimensionField)) return resolved.groups
+    const index = buildLabelIndex(conceptRows ?? [], resolved.dimensionField)
+    return refineConceptGroups(resolved.groups, index)
+  }, [resolved, conceptRows])
 
   const industryLevel = fieldConfig.hierarchyLevel ?? 2
-  const groups = useMemo(() => groupByIndustryLevel(resolved.groups, industryLevel), [resolved.groups, industryLevel])
+  const groups = useMemo(() => groupByIndustryLevel(baseGroups, industryLevel), [baseGroups, industryLevel])
 
   const stats = useMemo(() => {
     return groups
