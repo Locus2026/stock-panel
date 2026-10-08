@@ -22,7 +22,7 @@ FQGate 需要登录同花顺账号，它的授权**不随项目迁移**——这
 ## 1. 克隆与依赖
 
 ```bash
-git clone https://github.com/shy3130/tick-stock-panel.git ~/stock
+git clone git@github.com:Locus2026/stock-panel.git ~/stock
 cd ~/stock
 
 # 后端：按 uv.lock 精确还原依赖（不要用 pip install -r，项目没有 requirements.txt）
