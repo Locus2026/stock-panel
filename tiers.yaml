@@ -1,4 +1,9 @@
-# tickflow-stock-panel —— TickFlow 推荐套餐能力对照表(§5.2)
+# tickflow-stock-panel —— 数据源能力对照表
+#
+# ⚠️ 2026-10-04: 默认数据源已改为 fqgate(本机同花顺), 本表退化为
+# **TickFlow 回退源**的能力对照 —— 仅 fqgate 未声明的数据集
+# (minute / adj_factor / full_minute / financial) 会查到本表。
+# 业务代码永远不读这张表, 只读运行时探测出的 CapabilitySet。
 #
 # 仅用途:
 #   1. 启动期能力探测决定试探顺序
